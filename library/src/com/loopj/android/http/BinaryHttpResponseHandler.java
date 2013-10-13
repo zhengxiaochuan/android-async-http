@@ -19,6 +19,7 @@
 package com.loopj.android.http;
 
 import android.os.Message;
+
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
@@ -28,15 +29,16 @@ import org.apache.http.entity.BufferedHttpEntity;
 import org.apache.http.util.EntityUtils;
 
 import java.io.IOException;
+import java.util.regex.Pattern;
 
 /**
  * Used to intercept and handle the responses from requests made using
- * {@link AsyncHttpClient}. Receives response body as byte array with a 
- * content-type whitelist. (e.g. checks Content-Type against allowed list, 
+ * {@link AsyncHttpClient}. Receives response body as byte array with a
+ * content-type whitelist. (e.g. checks Content-Type against allowed list,
  * Content-length).
- * <p>
+ * <p>&nbsp;</p>
  * For example:
- * <p>
+ * <p>&nbsp;</p>
  * <pre>
  * AsyncHttpClient client = new AsyncHttpClient();
  * String[] allowedTypes = new String[] { "image/png" };
@@ -55,9 +57,9 @@ import java.io.IOException;
  */
 public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
     // Allow images by default
-    private static String[] mAllowedContentTypes = new String[] {
-        "image/jpeg",
-        "image/png"
+    private static String[] mAllowedContentTypes = new String[]{
+            "image/jpeg",
+            "image/png"
     };
 
     /**
@@ -70,6 +72,8 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
     /**
      * Creates a new BinaryHttpResponseHandler, and overrides the default allowed
      * content types with passed String array (hopefully) of content types.
+     *
+     * @param allowedContentTypes content types array, eg. 'image/jpeg'
      */
     public BinaryHttpResponseHandler(String[] allowedContentTypes) {
         this();
@@ -83,12 +87,15 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
 
     /**
      * Fired when a request returns successfully, override to handle in your own code
+     *
      * @param binaryData the body of the HTTP response from the server
      */
-    public void onSuccess(byte[] binaryData) {}
+    public void onSuccess(byte[] binaryData) {
+    }
 
     /**
      * Fired when a request returns successfully, override to handle in your own code
+     *
      * @param statusCode the status code of the response
      * @param binaryData the body of the HTTP response from the server
      */
@@ -98,13 +105,17 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
 
     /**
      * Fired when a request fails to complete, override to handle in your own code
-     * @param error the underlying cause of the failure
+     *
+     * @param statusCode response HTTP statuse code
+     * @param headers    response headers, if any
+     * @param error      the underlying cause of the failure
      * @param binaryData the response body, if any
      * @deprecated
      */
-    public void onFailure(Throwable error, byte[] binaryData) {
+    @Deprecated
+    public void onFailure(int statusCode, Header[] headers, Throwable error, byte[] binaryData) {
         // By default, call the deprecated onFailure(Throwable) for compatibility
-        onFailure(error);
+        onFailure(statusCode, error, null);
     }
 
 
@@ -116,8 +127,9 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
         sendMessage(obtainMessage(SUCCESS_MESSAGE, new Object[]{statusCode, responseBody}));
     }
 
-    protected void sendFailureMessage(Throwable e, byte[] responseBody) {
-        sendMessage(obtainMessage(FAILURE_MESSAGE, new Object[]{e, responseBody}));
+    @Override
+    protected void sendFailureMessage(int statusCode, Header[] headers, Throwable e, byte[] responseBody) {
+        sendMessage(obtainMessage(FAILURE_MESSAGE, new Object[]{statusCode, headers, e, responseBody}));
     }
 
     //
@@ -128,21 +140,22 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
         onSuccess(statusCode, responseBody);
     }
 
-    protected void handleFailureMessage(Throwable e, byte[] responseBody) {
-        onFailure(e, responseBody);
+    protected void handleFailureMessage(int statusCode, Header[] headers, Throwable e, byte[] responseBody) {
+        onFailure(statusCode, headers, e, responseBody);
     }
 
     // Methods which emulate android's Handler and Message methods
+    @Override
     protected void handleMessage(Message msg) {
         Object[] response;
-        switch(msg.what) {
+        switch (msg.what) {
             case SUCCESS_MESSAGE:
-                response = (Object[])msg.obj;
-                handleSuccessMessage(((Integer) response[0]).intValue() , (byte[]) response[1]);
+                response = (Object[]) msg.obj;
+                handleSuccessMessage((Integer) response[0], (byte[]) response[1]);
                 break;
             case FAILURE_MESSAGE:
-                response = (Object[])msg.obj;
-                handleFailureMessage((Throwable)response[0], (byte[])response[1]);
+                response = (Object[]) msg.obj;
+                handleFailureMessage((Integer) response[0], (Header[]) response[1], (Throwable) response[2], (byte[]) response[3]);
                 break;
             default:
                 super.handleMessage(msg);
@@ -151,40 +164,41 @@ public class BinaryHttpResponseHandler extends AsyncHttpResponseHandler {
     }
 
     // Interface to AsyncHttpRequest
-    void sendResponseMessage(HttpResponse response) {
+    @Override
+    protected void sendResponseMessage(HttpResponse response) {
         StatusLine status = response.getStatusLine();
         Header[] contentTypeHeaders = response.getHeaders("Content-Type");
         byte[] responseBody = null;
-        if(contentTypeHeaders.length != 1) {
+        if (contentTypeHeaders.length != 1) {
             //malformed/ambiguous HTTP Header, ABORT!
-            sendFailureMessage(new HttpResponseException(status.getStatusCode(), "None, or more than one, Content-Type Header found!"), responseBody);
+            sendFailureMessage(status.getStatusCode(), response.getAllHeaders(), new HttpResponseException(status.getStatusCode(), "None, or more than one, Content-Type Header found!"), (String) null);
             return;
         }
         Header contentTypeHeader = contentTypeHeaders[0];
         boolean foundAllowedContentType = false;
-        for(String anAllowedContentType : mAllowedContentTypes) {
-            if(anAllowedContentType.equals(contentTypeHeader.getValue())) {
+        for (String anAllowedContentType : mAllowedContentTypes) {
+            if (Pattern.matches(anAllowedContentType, contentTypeHeader.getValue())) {
                 foundAllowedContentType = true;
             }
         }
-        if(!foundAllowedContentType) {
+        if (!foundAllowedContentType) {
             //Content-Type not in allowed list, ABORT!
-            sendFailureMessage(new HttpResponseException(status.getStatusCode(), "Content-Type not allowed!"), responseBody);
+            sendFailureMessage(status.getStatusCode(), response.getAllHeaders(), new HttpResponseException(status.getStatusCode(), "Content-Type not allowed!"), (String) null);
             return;
         }
         try {
             HttpEntity entity = null;
             HttpEntity temp = response.getEntity();
-            if(temp != null) {
+            if (temp != null) {
                 entity = new BufferedHttpEntity(temp);
             }
             responseBody = EntityUtils.toByteArray(entity);
-        } catch(IOException e) {
-            sendFailureMessage(e, (byte[]) null);
+        } catch (IOException e) {
+            sendFailureMessage(status.getStatusCode(), response.getAllHeaders(), e, (byte[]) null);
         }
 
-        if(status.getStatusCode() >= 300) {
-            sendFailureMessage(new HttpResponseException(status.getStatusCode(), status.getReasonPhrase()), responseBody);
+        if (status.getStatusCode() >= 300) {
+            sendFailureMessage(status.getStatusCode(), response.getAllHeaders(), new HttpResponseException(status.getStatusCode(), status.getReasonPhrase()), responseBody);
         } else {
             sendSuccessMessage(status.getStatusCode(), responseBody);
         }
